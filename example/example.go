@@ -2,60 +2,35 @@ package main
 
 import (
 	"errors"
-	"fmt"
-	"github.com/Cam-asm/ratelimiter"
 	"math/rand"
-	"net/http"
+
+	"github.com/Cam-asm/ratelimiter"
 )
 
 func main() {
 	// How to use the rate limiter
-	urlPattern := "/payid/something/id"
-	queueName := "PAYID"
+	vaUrlPattern := "/virtual-accounts/something/id"
+	vaQueueName := "VA"
 
-	t := ratelimiter.TPS{
+	v := ratelimiter.TPS{
 		ReadChannelSize: 10,
 		RequeueChanSize: 10,
-		Interface:       tps{},
+		Interface:       va{},
+		Url:             &vaUrlPattern,
+		QueueName:       &vaQueueName,
+	}
+	go v.Start()
+
+	urlPattern := "/payid/something/id"
+	queueName := "PAYID"
+	pid := ratelimiter.TPS{
+		ReadChannelSize: 10,
+		RequeueChanSize: 10,
+		Interface:       payid{},
 		Url:             &urlPattern,
 		QueueName:       &queueName,
 	}
-	t.Start()
-}
-
-//
-type tps struct{}
-
-func (t tps) ReceiveAndDeleteMsgs() ([]ratelimiter.SqsMessage, error) {
-	fmt.Println("Batch read 10 sqs messages")
-
-	return []ratelimiter.SqsMessage{
-		{Id: 1, Body: []byte("message: 1")},
-		{Id: 2, Body: []byte("message: 2")},
-		{Id: 3, Body: []byte("message: 3")},
-		{Id: 4, Body: []byte("message: 4")},
-		{Id: 5, Body: []byte("message: 5")},
-		{Id: 6, Body: []byte("message: 6")},
-		{Id: 7, Body: []byte("message: 7")},
-		{Id: 8, Body: []byte("message: 8")},
-		{Id: 9, Body: []byte("message: 9")},
-		{Id: 10, Body: []byte("message: 10")},
-	}, randomError()
-}
-func (t tps) ProcessMessage(message ratelimiter.SqsMessage, urlPattern *string) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
-	return cr, randomError()
-}
-
-func (t tps) ProcessResponse(cr ratelimiter.CuscalRequest) error {
-	return randomError()
-}
-
-func (t tps) SendRequest(request ratelimiter.CuscalRequest) (err error) {
-	fmt.Println(http.MethodPost, request.Id, string(request.Body))
-	//r.Set.Headers("", "")
-	//r.Set.Headers("", "")
-
-	return randomError()
+	pid.Start()
 }
 
 func randomError() error {
