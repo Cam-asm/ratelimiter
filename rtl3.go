@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -10,13 +11,19 @@ import (
 	"time"
 )
 
-const queuedBatches = 6
+const (
+	queuedBatches    = 6
+	requeueBatchSize = 10
+	workerName       = "VA"
+)
 
 var (
 	wgSendRequest = sync.WaitGroup{}
 	// quit = has the graceful shutdown process been toggled?
 	quit         bool
-	delayRequest bool // not required - only used for demo situation
+	quitRequeue  bool
+	delayRequest bool                                       // not required - only used for demo situation.
+	readyToQueue = make(chan *sqsMessage, requeueBatchSize) // separate channel for requeuing messages to SQS.
 )
 
 /* MISSION: To send rate limited HTTP requests as consistently as possible.
@@ -24,8 +31,7 @@ var (
 This implementation performs pre-processing and cleanup for each request in separate go routines, limiting
 interference of any long-running processes, network timeouts or slow database queries.
 
-TODO	- Add updating our SQS queue. We batch updates to limit costs
-		- Some HTTP errors can be handled gracefully and can be requested straight away,
+TODO	- Some HTTP errors can be handled gracefully and can be requested straight away,
 		  but JSON unmarshalling errors need to be re-queued.
 		- Provide an easy way to setup multiple rate limiters
 		- Can we provide or override the functions/methods called in the rate limiter?
@@ -42,6 +48,8 @@ func main() {
 	// query sqs queue in a go routine
 	go getAndProcessMessages(readyToSend)
 
+	go listenRequeue()
+
 	// blocks main() from exiting while there are no
 	RateLimitSendMessages(readyToSend)
 
@@ -49,6 +57,9 @@ func main() {
 	// This allows each sendRequest() call to complete (wait for Cuscal response and
 	// save to the database)
 	wgSendRequest.Wait()
+	fmt.Println("ALL GO ROUTINES CLOSED")
+
+	cleanOutRequeue()
 }
 
 // Gracefully trigger the server to start its shutdown procedure
@@ -119,7 +130,14 @@ func (c *cuscalRequest) waitResponse() {
 
 func (c *cuscalRequest) sendRequest() {
 	// Send HTTP request.
-	fmt.Println(http.MethodPost /*, time.Now()*/, c.id, string(c.body))
+	_, err := fmt.Fprintln(os.Stdout, http.MethodPost, c.id, string(c.body))
+	// Intentionally cause random failures to trigger requeuing
+	if err != nil || rand.Intn(3) <= 2 {
+		fmt.Println("HTTP call failed to send. ID:", c.id, string(c.body))
+		c.requeueMessage()
+		return
+	}
+
 	go c.waitResponse()
 }
 
@@ -155,9 +173,60 @@ type cuscalRequest struct {
 	url     *string
 	body    []byte
 	headers []header
+	retries uint8
 }
 type header struct {
 	header, value string
+}
+
+func (c *cuscalRequest) requeueMessage() {
+	// Additional steps might be required here.
+	readyToQueue <- &sqsMessage{
+		id:      c.id,
+		body:    c.body,
+		retries: c.retries + 1,
+		typ:     workerName,
+	}
+}
+
+type sqsMessage struct {
+	id      uint
+	body    []byte
+	retries uint8
+	typ     string
+}
+
+func listenRequeue() {
+	for {
+		// wait for 10 items from readyToQueue
+		toRequeue := [requeueBatchSize]*sqsMessage{<-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue, <-readyToQueue}
+		for i := range toRequeue {
+			if toRequeue[i] == nil {
+				// At shutdown send nil to trigger the rest of the messages to be requeued.
+				// I don't think there's a better way to do it?
+				continue
+			}
+
+			toRequeue[i].Requeue()
+		}
+
+		if quitRequeue {
+			fmt.Print("\n\nEND listenRequeue\n\n")
+			return
+		}
+	}
+}
+
+func cleanOutRequeue() {
+	quitRequeue = true
+	for i := 1; i <= requeueBatchSize; i++ {
+		fmt.Println("Send requeue nil", i)
+		readyToQueue <- nil
+	}
+}
+
+func (m *sqsMessage) Requeue() {
+	fmt.Println("Requeue", m.id, string(m.body))
 }
 
 func (c cuscalRequest) IsEmpty() bool {

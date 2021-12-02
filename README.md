@@ -1,4 +1,4 @@
-# ratelimiter     _:prototype:_
+# `ratelimiter`     _:prototype:_
 
 ## **MISSION:**
 To send rate limited HTTP requests as consistently as possible.
@@ -7,7 +7,10 @@ This implementation performs pre-processing and cleanup for each request in sepa
 interference of any long-running processes, network timeouts or slow database queries.
 
 ###TODO
-- Add updating our SQS queue. We batch updates to limit costs. Perhaps another channel is required?
 - Some HTTP errors can be handled gracefully and can be requested straight away, but JSON unmarshalling errors need to be re-queued.
 - Provide an easy way to set up multiple rate limiters with different endpoints and settings.
 - Can we provide or override the functions/methods called in the rate limiter? Perhaps an interface would be a good fit - a struct that implements set methods?
+
+
+###Done
+- Add another channel for requeuing our SQS messages. We batch updates to limit costs.
