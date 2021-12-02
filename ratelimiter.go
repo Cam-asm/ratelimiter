@@ -71,7 +71,7 @@ func (t *TPS) getAndProcessMessages() {
 	var u uint // Used only for logging purposes.
 
 	for {
-		//call sqs to get the next 10 requests
+		// call sqs to get the next 10 requests
 		messages, err := t.ReceiveAndDeleteMsgs()
 		if err != nil {
 			fmt.Println(err)
@@ -128,7 +128,7 @@ func (t *TPS) rateLimitSendMessages() {
 		}
 
 		// asynchronously make the http request and wait for the response. Then save to DB
-		//cr.sendRequest()
+		// cr.sendRequest()
 		if err := t.SendRequest(cr); err != nil {
 			// requeue message
 			t.chanQueue <- cr.convertMessage(t.QueueName)
@@ -189,7 +189,7 @@ type CuscalRequest struct {
 	Id   uint
 	Url  *string
 	Body []byte
-	//Headers []header
+	// Headers []header
 	Retries uint8
 }
 

@@ -80,7 +80,7 @@ func getAndProcessMessages(readyToSend chan<- cuscalRequest) {
 	var u uint
 
 	for {
-		//call sqs to get the next 10 requests
+		// call sqs to get the next 10 requests
 		messages, _ := getMessagesFromQueue()
 		// loop over each request
 		for i := range messages {
@@ -175,6 +175,7 @@ type cuscalRequest struct {
 	headers []header
 	retries uint8
 }
+
 type header struct {
 	header, value string
 }
