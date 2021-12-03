@@ -13,8 +13,6 @@ func main() {
 	vaQueueName := "VA"
 
 	v := ratelimiter.TPS{
-		ReadChannelSize: 10,
-		RequeueChanSize: 10,
 		Interface: va{
 			Url: &vaUrlPattern,
 		},
@@ -24,8 +22,6 @@ func main() {
 
 	queueName := "PAYID"
 	pid := ratelimiter.TPS{
-		ReadChannelSize: 10,
-		RequeueChanSize: 10,
 		Interface: payid{
 			UrlPattern: "http://localhost:6060/%s%s",
 		},
