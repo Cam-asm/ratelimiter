@@ -9,7 +9,20 @@ import (
 	"time"
 )
 
+const (
+	readSize    = 18
+	requeueSize = 10
+)
+
 func (t *TPS) Start() {
+	// Set realistic defaults. There's no benefit to using TPS if the channel size is < 2.
+	if t.ReadChannelSize <= 1 {
+		t.ReadChannelSize = readSize
+	}
+	if t.RequeueChanSize <= 1 {
+		t.RequeueChanSize = requeueSize
+	}
+
 	t.listenToQuit()
 
 	// readyToSend channel contains a list of Cuscal request ready to be sent
