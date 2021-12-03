@@ -2,6 +2,7 @@ package ratelimiter
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -160,8 +161,6 @@ func (t *TPS) rateLimitSendMessages() {
 	}
 }
 
-var delaySomeRequests bool
-
 func (t *TPS) waitResponse(c CuscalRequest) {
 	// This WaitGroup will let the go routines sendRequest to continue processing
 	// until wgSendRequest.Done is called.
@@ -169,10 +168,9 @@ func (t *TPS) waitResponse(c CuscalRequest) {
 	defer t.wgSendRequest.Done()
 
 	// Simulate a long round trip time for the response from Cuscal
-	if delaySomeRequests {
+	if rand.Intn(4) == 3 {
 		time.Sleep(5 * time.Second)
 	}
-	delaySomeRequests = !delaySomeRequests
 
 	err := t.ProcessResponse(c)
 	if err != nil {
