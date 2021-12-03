@@ -9,7 +9,7 @@ import (
 
 func main() {
 	// How to use the rate limiter
-	vaUrlPattern := "/virtual-accounts/something/id"
+	vaUrlPattern := "/virtual-accounts/something/id%s%s"
 	vaQueueName := "VA"
 
 	v := ratelimiter.TPS{

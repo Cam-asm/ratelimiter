@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/google/uuid"
 	"net/http"
+
+	"github.com/google/uuid"
 
 	"github.com/Cam-asm/ratelimiter"
 )
@@ -32,7 +33,7 @@ func (v va) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
 func (v va) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
 	traceId, err := uuid.NewUUID()
 	if err != nil {
-		return cr, fmt.Errorf("pid: error generating traceId: %w", err)
+		return cr, fmt.Errorf("va: error generating traceId: %w", err)
 	}
 
 	return ratelimiter.CuscalRequest{
