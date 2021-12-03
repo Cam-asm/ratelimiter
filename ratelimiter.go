@@ -87,6 +87,11 @@ func (t *TPS) listenToQuit() {
 		// block until quit channel receives an interrupt
 		<-t.quit
 		fmt.Print("\n\nTRIGGER SHUTDOWN\n\n")
+		// Once the interrupt has been received, keep sending it to the quit channel.
+		// Each TPS.getAndProcessMessages doesn't listen to the TPS.quit channel while processing a batch.
+		for {
+			t.quit <- os.Interrupt
+		}
 	}()
 }
 
