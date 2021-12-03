@@ -14,6 +14,7 @@ func (t *TPS) Start() {
 
 	// readyToSend channel contains a list of Cuscal request ready to be sent
 	t.chanRead = make(chan CuscalRequest, t.ReadChannelSize)
+	t.chanRequeue = make(chan *SqsMessage)
 
 	// query sqs queue in a go routine
 	go t.getAndProcessMessages()
@@ -35,13 +36,12 @@ func (t *TPS) Start() {
 type TPS struct {
 	ReadChannelSize uint8
 	RequeueChanSize uint8
-	chanQueue       chan *SqsMessage
+	chanRequeue     chan *SqsMessage
 	chanRead        chan CuscalRequest
 	Interface
 	wgSendRequest sync.WaitGroup
-	Url           *string
+	wgRequeue     sync.WaitGroup
 	QueueName     *string
-	quitRequeue   bool
 	quitRead      bool
 }
 
@@ -58,12 +58,10 @@ func (t *TPS) listenToQuit() {
 }
 
 func (t *TPS) requeueShutdown() {
-	t.quitRequeue = true
-	var i uint8
-	for i = 1; i <= t.RequeueChanSize; i++ {
-		fmt.Println("Send requeue nil", i)
-		t.chanQueue <- nil
-	}
+	fmt.Println(*t.QueueName, "Close requeue channel")
+	close(t.chanRequeue)
+	// Wait for all remaining messages to be requeued.
+	t.wgRequeue.Wait()
 }
 
 // worker to query sqs queue
@@ -72,7 +70,7 @@ func (t *TPS) getAndProcessMessages() {
 
 	for {
 		// call sqs to get the next 10 requests
-		messages, err := t.ReceiveAndDeleteMsgs()
+		messages, err := t.ReceiveAndDeleteMessages()
 		if err != nil {
 			fmt.Println(err)
 			continue
@@ -80,10 +78,11 @@ func (t *TPS) getAndProcessMessages() {
 
 		// loop over each request
 		for i := range messages {
-			fmt.Println("processing message:", u)
+			u++
+			messages[i].Id = u
 			// process each message - marshal the json payload ready for sending.
 			var request CuscalRequest
-			request, err = t.ProcessMessage(messages[i], t.Url)
+			request, err = t.ProcessMessage(messages[i])
 			if err != nil {
 				fmt.Println(err)
 				continue
@@ -93,9 +92,9 @@ func (t *TPS) getAndProcessMessages() {
 			// then send the message to the channel
 			// if the channel doesn't have any space available then
 			// this line blocks any further processing
+			fmt.Println(*t.QueueName, "processing message:", request.Id)
 			t.chanRead <- request
 
-			u++
 		}
 
 		// this could use the q channel from listenToQuit - but I want to keep this simple,
@@ -105,7 +104,7 @@ func (t *TPS) getAndProcessMessages() {
 		if t.quitRead {
 			// Close the channel
 			close(t.chanRead)
-			fmt.Print("\n\n\n\t\tquit ==", u, "\n\n\n")
+			fmt.Print("\n\n\n\t\tquit ", *t.QueueName, ", LastMessageID ==", u, "\n\n\n")
 			return
 		}
 	}
@@ -117,13 +116,16 @@ func (t *TPS) rateLimitSendMessages() {
 		// wait to receive a message in readyToSend.
 		// If the channel doesn't contain any items, then it blocks and waits on this line.
 		cr, ok := <-t.chanRead
+		fmt.Println("\t\t\t\t\t\t>>>:", cr.Id)
 		if !ok {
-			/* I never encountered this problem - so it's disabled.
+			// if the channel was closed then return.
+
+			/*// I've never encountered this problem - so it's disabled.
 			if !cr.IsEmpty() {
 				log.Println("cr is not meant to be populated")
 				go sendRequest(cr, ok)
 			}*/
-			// if the channel was closed then return.
+			fmt.Print("\n\nEXIT rateLimitSendMessages\n\n")
 			return
 		}
 
@@ -131,10 +133,13 @@ func (t *TPS) rateLimitSendMessages() {
 		// cr.sendRequest()
 		if err := t.SendRequest(cr); err != nil {
 			// requeue message
-			t.chanQueue <- cr.convertMessage(t.QueueName)
-		} else {
-			go t.waitResponse(cr)
+			fmt.Println("\t\t\t\t\t\tSend to requeue:", cr.Id)
+			t.chanRequeue <- cr.toMessage(t.QueueName)
+			continue
 		}
+
+		go t.waitResponse(cr)
+		fmt.Println("\t\t\t\t\t\tDone:", cr.Id)
 	}
 }
 
@@ -162,13 +167,13 @@ func (t *TPS) waitResponse(c CuscalRequest) {
 }
 
 type Interface interface {
-	ReceiveAndDeleteMsgs() ([]SqsMessage, error)
-	ProcessMessage(message SqsMessage, urlPattern *string) (CuscalRequest, error) // maybe change Url *string to type Url?
-	SendRequest(request CuscalRequest) error
-	ProcessResponse(request CuscalRequest) error
+	ReceiveAndDeleteMessages() ([]SqsMessage, error)
+	ProcessMessage(SqsMessage) (CuscalRequest, error)
+	SendRequest(CuscalRequest) error
+	ProcessResponse(CuscalRequest) error
 }
 
-func (c *CuscalRequest) convertMessage(Type *string) *SqsMessage {
+func (c *CuscalRequest) toMessage(Type *string) *SqsMessage {
 	// Additional steps might be required here.
 	return &SqsMessage{
 		Id:      c.Id,
@@ -186,16 +191,16 @@ type SqsMessage struct {
 }
 
 type CuscalRequest struct {
-	Id   uint
-	Url  *string
-	Body []byte
-	// Headers []header
+	Id      uint
+	Url     string
+	Body    []byte
+	Headers []Header
 	Retries uint8
 }
 
-//type header struct {
-//	header, value string
-//}
+type Header struct {
+	Header, Value string
+}
 
 /*type ActivateVACommand struct {
 	Id         uuid.UUID      `json:"Id" validate:"required"`
@@ -206,26 +211,42 @@ type CuscalRequest struct {
 }*/
 
 func (t *TPS) listenRequeue() {
+	t.wgRequeue.Add(1)
+
+	var (
+		s  uint8
+		ok bool
+		//toRequeue = make([]*SqsMessage, t.RequeueChanSize)
+	)
+
 	for {
-		// wait for 10 items from readyToQueue
-		toRequeue := []*SqsMessage{<-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue, <-t.chanQueue}
-		for i := range toRequeue {
-			if toRequeue[i] == nil {
-				// At shutdown send nil to trigger the rest of the messages to be requeued.
-				// I don't think there's a better way to do it?
-				continue
+		toRequeue := make([]*SqsMessage, t.RequeueChanSize, t.RequeueChanSize)
+
+		// Wait for X items in chanRequeue
+		for s = 0; s < t.RequeueChanSize; s++ {
+			toRequeue[s], ok = <-t.chanRequeue
+			if !ok {
+				t.Requeue(toRequeue)
+				t.wgRequeue.Done()
+				fmt.Print("\n\nEND listenRequeue\n\n")
+				return
 			}
-
-			toRequeue[i].Requeue2(t.QueueName)
 		}
 
-		if t.quitRequeue {
-			fmt.Print("\n\nEND listenRequeue\n\n")
-			return
-		}
+		t.Requeue(toRequeue)
 	}
 }
 
-func (m *SqsMessage) Requeue2(queueName *string) {
-	fmt.Println("Requeue", m.Id, "in", *queueName, string(m.Body))
+func (t *TPS) Requeue(messages []*SqsMessage) {
+	fmt.Print("\t\t\t\t\t\t\t\t\t\t\t\tRequeued:")
+
+	for i := range messages {
+		if messages[i] == nil {
+			fmt.Print("NIL, ")
+			continue
+		}
+
+		fmt.Print(messages[i].Id, ", ")
+	}
+	fmt.Print("\n")
 }

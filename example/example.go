@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"fmt"
 	"math/rand"
 
 	"github.com/Cam-asm/ratelimiter"
@@ -15,27 +15,28 @@ func main() {
 	v := ratelimiter.TPS{
 		ReadChannelSize: 10,
 		RequeueChanSize: 10,
-		Interface:       va{},
-		Url:             &vaUrlPattern,
-		QueueName:       &vaQueueName,
+		Interface: va{
+			Url: &vaUrlPattern,
+		},
+		QueueName: &vaQueueName,
 	}
 	go v.Start()
 
-	urlPattern := "/payid/something/id"
 	queueName := "PAYID"
 	pid := ratelimiter.TPS{
 		ReadChannelSize: 10,
 		RequeueChanSize: 10,
-		Interface:       payid{},
-		Url:             &urlPattern,
-		QueueName:       &queueName,
+		Interface: payid{
+			UrlPattern: "http://localhost:6060/%s%s",
+		},
+		QueueName: &queueName,
 	}
 	pid.Start()
 }
 
-func randomError() error {
+func randomError(id uint, funcName string) error {
 	if rand.Intn(4) == 3 {
-		return errors.New("something went wrong")
+		return fmt.Errorf("something went wrong. ID: %d %s", id, funcName)
 	}
 
 	return nil

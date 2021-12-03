@@ -7,38 +7,39 @@ import (
 	"github.com/Cam-asm/ratelimiter"
 )
 
-//
-type va struct{}
-
-func (v va) ReceiveAndDeleteMsgs() ([]ratelimiter.SqsMessage, error) {
-	fmt.Println("Batch read 10 sqs messages")
-
-	return []ratelimiter.SqsMessage{
-		{Id: 1, Body: []byte("message: 1")},
-		{Id: 2, Body: []byte("message: 2")},
-		{Id: 3, Body: []byte("message: 3")},
-		{Id: 4, Body: []byte("message: 4")},
-		{Id: 5, Body: []byte("message: 5")},
-		{Id: 6, Body: []byte("message: 6")},
-		{Id: 7, Body: []byte("message: 7")},
-		{Id: 8, Body: []byte("message: 8")},
-		{Id: 9, Body: []byte("message: 9")},
-		{Id: 10, Body: []byte("message: 10")},
-	}, randomError()
+type va struct {
+	Url *string
 }
 
-func (v va) ProcessMessage(message ratelimiter.SqsMessage, urlPattern *string) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
-	return cr, randomError()
+func (v va) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
+	fmt.Println("va: Batch read 10 sqs messages")
+
+	return []ratelimiter.SqsMessage{
+		{Id: 1, Body: []byte("message: A")},
+		{Id: 2, Body: []byte("message: B")},
+		{Id: 3, Body: []byte("message: C")},
+		{Id: 4, Body: []byte("message: D")},
+		{Id: 5, Body: []byte("message: E")},
+		{Id: 6, Body: []byte("message: F")},
+		{Id: 7, Body: []byte("message: G")},
+		{Id: 8, Body: []byte("message: H")},
+		{Id: 9, Body: []byte("message: I")},
+		{Id: 10, Body: []byte("message: J")},
+	}, randomError(9998, "va.ReceiveAndDeleteMessages")
+}
+
+func (v va) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
+	return cr, randomError(message.Id, "va.ProcessMessage")
 }
 
 func (v va) ProcessResponse(cr ratelimiter.CuscalRequest) error {
-	return randomError()
+	return randomError(cr.Id, "va.ProcessResponse")
 }
 
 func (v va) SendRequest(request ratelimiter.CuscalRequest) (err error) {
-	fmt.Println(http.MethodPost, request.Id, string(request.Body))
+	fmt.Println("va:", http.MethodPost, request.Id, string(request.Body))
 	// r.Set.Headers("", "")
 	// r.Set.Headers("", "")
 
-	return randomError()
+	return randomError(request.Id, "va.SendRequest")
 }
