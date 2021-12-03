@@ -55,18 +55,19 @@ type TPS struct {
 	wgSendRequest sync.WaitGroup
 	wgRequeue     sync.WaitGroup
 	QueueName     *string
-	quitRead      bool
+	quit          chan os.Signal
 }
 
-// Gracefully trigger the server to start its shutdown procedure
+// Gracefully trigger the server to start its shutdown procedure.
 func (t *TPS) listenToQuit() {
-	q := make(chan os.Signal)
-	signal.Notify(q, os.Interrupt, syscall.SIGTERM)
+	t.quit = make(chan os.Signal)
+	signal.Notify(t.quit, os.Interrupt, syscall.SIGTERM)
+	// Print out a response to the interrupt signal.
+	// getAndProcessMessages may take several seconds to print a response while it's processing a batch.
 	go func() {
-		// block until q channel receives an interrupt
-		<-q
+		// block until quit channel receives an interrupt
+		<-t.quit
 		fmt.Print("\n\nTRIGGER SHUTDOWN\n\n")
-		t.quitRead = true
 	}()
 }
 
@@ -114,11 +115,14 @@ func (t *TPS) getAndProcessMessages() {
 		// and I don't want to forcefully quit from this loop.
 		// This can take several seconds to return - due to the if statement placement below the blocking `t.chanRead <- request`
 		// and wanting to complete up to 10 outstanding sqs messages read.
-		if t.quitRead {
+		select {
+		case <-t.quit:
 			// Close the channel
 			close(t.chanRead)
 			fmt.Print("\n\n\n\t\tquit ", *t.QueueName, ", LastMessageID ==", u, "\n\n\n")
 			return
+		default:
+			continue
 		}
 	}
 }
