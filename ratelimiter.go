@@ -3,6 +3,7 @@ package ratelimiter
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -12,8 +13,8 @@ import (
 )
 
 const (
-	readSize           = 18
-	requeueSize        = 10
+	readSize           = 18 // Maximum quantity of SQS messages that can be processed before being sent.
+	requeueSize        = 10 // The maximum quantity of SQS messages that can be batched together in one request.
 	checkXTimesPerWait = 8
 	minRequeueWait     = checkXTimesPerWait * time.Second
 	maxCheckTime       = 15 * time.Second
@@ -21,14 +22,12 @@ const (
 
 func (t *TPS) Start() {
 	// Set realistic defaults.
-	if t.SendEvery < time.Millisecond {
+	if t.SendEvery < 2*time.Millisecond {
+		log.Fatalln("t.SendEvery is too low, expecting a value => 2ms")
 	}
 	// There's no benefit to using TPS if the channel size is < 2.
 	if t.ReadChannelSize <= 1 {
 		t.ReadChannelSize = readSize
-	}
-	if t.RequeueChanSize <= 1 {
-		t.RequeueChanSize = requeueSize
 	}
 	if t.MaxRequeueWait < minRequeueWait {
 		t.MaxRequeueWait = minRequeueWait
@@ -56,14 +55,13 @@ func (t *TPS) Start() {
 	// This allows each sendRequest() call to complete (wait for Cuscal response and
 	// save to the database)
 	t.wgSendRequest.Wait()
-	fmt.Println("ALL GO ROUTINES CLOSED")
+	log.Println("ALL GO ROUTINES CLOSED")
 
 	t.requeueShutdown()
 }
 
 type TPS struct {
 	ReadChannelSize uint8
-	RequeueChanSize uint8
 	QueueName       *string
 	SendEvery       time.Duration
 	MaxRequeueWait  time.Duration
@@ -86,7 +84,7 @@ func (t *TPS) listenToQuit() {
 	go func() {
 		// block until quit channel receives an interrupt
 		<-t.quit
-		fmt.Print("\n\nTRIGGER SHUTDOWN\n\n")
+		log.Print("\n\nTRIGGER SHUTDOWN\n\n")
 		// Once the interrupt has been received, keep sending it to the quit channel.
 		// Each TPS.getAndProcessMessages doesn't listen to the TPS.quit channel while processing a batch.
 		for {
@@ -96,7 +94,7 @@ func (t *TPS) listenToQuit() {
 }
 
 func (t *TPS) requeueShutdown() {
-	fmt.Println(*t.QueueName, "Close requeue channel")
+	log.Println(*t.QueueName, "Close requeue channel")
 	close(t.chanRequeue)
 	// Wait for all remaining messages to be requeued.
 	t.wgRequeue.Wait()
@@ -104,14 +102,14 @@ func (t *TPS) requeueShutdown() {
 
 // worker to query sqs queue
 func (t *TPS) getAndProcessMessages() {
-	fmt.Println("getAndProcessMessages")
+	log.Println("getAndProcessMessages")
 	var u uint // Used only for logging purposes.
 
 	for {
 		// call sqs to get the next 10 requests
 		messages, err := t.ReceiveAndDeleteMessages()
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			continue
 		}
 
@@ -123,7 +121,7 @@ func (t *TPS) getAndProcessMessages() {
 			var request CuscalRequest
 			request, err = t.ProcessMessage(messages[i])
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
 				continue
 			}
 
@@ -131,7 +129,7 @@ func (t *TPS) getAndProcessMessages() {
 			// then send the message to the channel
 			// if the channel doesn't have any space available then
 			// this line blocks any further processing
-			fmt.Println(*t.QueueName, "processing message:", request.Id)
+			log.Println(*t.QueueName, "processing message:", request.Id)
 			t.chanRead <- request
 
 		}
@@ -144,10 +142,10 @@ func (t *TPS) getAndProcessMessages() {
 		case <-t.quit:
 			// Close the channel
 			close(t.chanRead)
-			fmt.Print("\n\n\n\t\tquit ", *t.QueueName, ", LastMessageID ==", u, "\n\n\n")
+			log.Print("\n\n\n\t\tquit ", *t.QueueName, ", LastMessageID ==", u, "\n\n\n")
 			return
 		default:
-			fmt.Println("\t\t\t\t\t\t\t\tCONTINUE!!!")
+			log.Println("\t\t\t\t\t\t\t\tCONTINUE!!!")
 			continue
 		}
 	}
@@ -159,7 +157,7 @@ func (t *TPS) rateLimitSendMessages() {
 		// wait to receive a message in readyToSend.
 		// If the channel doesn't contain any items, then it blocks and waits on this line.
 		cr, ok := <-t.chanRead
-		fmt.Println("\t\t\t\t\t\t>>>:", cr.Id)
+		log.Println("\t\t\t\t\t\t>>>:", cr.Id)
 		if !ok {
 			// if the channel was closed then return.
 
@@ -168,7 +166,7 @@ func (t *TPS) rateLimitSendMessages() {
 				log.Println("cr is not meant to be populated")
 				go sendRequest(cr, ok)
 			}*/
-			fmt.Print("\n\nEXIT rateLimitSendMessages\n\n")
+			log.Print("\n\nEXIT rateLimitSendMessages\n\n")
 			return
 		}
 
@@ -176,13 +174,13 @@ func (t *TPS) rateLimitSendMessages() {
 		// cr.sendRequest()
 		if err := t.SendRequest(cr); err != nil {
 			// requeue message
-			fmt.Println("\t\t\t\t\t\t", *t.QueueName, "Send to requeue:", cr.Id)
+			log.Println("\t\t\t\t\t\t", *t.QueueName, "Send to requeue:", cr.Id)
 			t.chanRequeue <- cr.toMessage(t.QueueName)
 			continue
 		}
 
 		go t.waitResponse(cr)
-		fmt.Println("\t\t\t\t\t\tDone:", cr.Id)
+		log.Println("\t\t\t\t\t\tDone:", cr.Id)
 	}
 }
 
@@ -199,11 +197,11 @@ func (t *TPS) waitResponse(c CuscalRequest) {
 
 	err := t.ProcessResponse(c)
 	if err != nil {
-		fmt.Println("Process Response err", err)
+		log.Println("Process Response err", err)
 		return
 	}
 
-	fmt.Println("save to database message:", c.Id)
+	log.Println("save to database message:", c.Id)
 }
 
 type Interface interface {
@@ -242,21 +240,13 @@ type Header struct {
 	Header, Value string
 }
 
-/*type ActivateVACommand struct {
-	Id         uuid.UUID      `json:"Id" validate:"required"`
-	EntityType string         `json:"entity_type" validate:"required"`
-	Type       string         `json:"type" validate:"required"`
-	Data       ActivateVAData `json:"data" validate:"required"`
-	RetryCount int            `json:"retry_count"`
-}*/
-
 func (t *TPS) listenRequeue() {
 	t.wgRequeue.Add(1)
 
 	var (
-		s           uint8
+		qty         uint8
 		ok          bool
-		toRequeue   = make([]*SqsMessage, t.RequeueChanSize, t.RequeueChanSize)
+		toRequeue   = [requeueSize]*SqsMessage{}
 		firstExpiry = time.Now().Add(t.MaxRequeueWait)
 		timesUp     = make(chan time.Time)
 	)
@@ -273,45 +263,44 @@ func (t *TPS) listenRequeue() {
 	for {
 		select {
 		// Wait for a new message to be received in t.chanRequeue or ticker timesUp to be triggered.
-		case toRequeue[s], ok = <-t.chanRequeue:
-			s++
+		case toRequeue[qty], ok = <-t.chanRequeue:
+			qty++
 
 			switch {
 			case !ok:
-				t.Requeue(&toRequeue, &s)
-				fmt.Print("\n\nEND listenRequeue\n\n")
+				t.Requeue(&toRequeue, &qty)
+				log.Print("\n\nEND listenRequeue\n\n")
 				t.wgRequeue.Done()
 				return
-			case s == 1:
+			case qty == 1:
 				firstExpiry = time.Now().Add(t.MaxRequeueWait)
-			case s == t.RequeueChanSize:
-				// TODO is there a maximum number of rows that can be sent to the queue? If yes, then we still need this.
-				t.Requeue(&toRequeue, &s)
+			case qty == requeueSize:
+				t.Requeue(&toRequeue, &qty)
 			}
 
 		case now := <-timesUp:
-			if s >= 1 && now.After(firstExpiry) {
-				t.Requeue(&toRequeue, &s)
+			if qty >= 1 && now.After(firstExpiry) {
+				t.Requeue(&toRequeue, &qty)
 			}
 		}
 	}
 }
 
-func (t *TPS) Requeue(messages *[]*SqsMessage, s *uint8) {
-	log := fmt.Sprintf("\t\t\t\t\t\t\t\t\t\t\t\tRequeued: %s - Requeued: ", *t.QueueName)
+func (t *TPS) Requeue(messages *[requeueSize]*SqsMessage, qty *uint8) {
+	l := fmt.Sprintf("\t\t\t\t\t\t\t\t\t\t\t\tRequeued: %s - Requeued: ", *t.QueueName)
 
 	for _, m := range *messages {
 		if m == nil {
-			log += "NIL, "
+			l += "NIL, "
 			continue
 		}
 
-		log += fmt.Sprintf("%d, ", m.Id)
+		l += fmt.Sprintf("%d, ", m.Id)
 	}
-	fmt.Println(log)
+	log.Println(l)
 
 	// Clear all messages to prevent double requeued.
-	*messages = make([]*SqsMessage, len(*messages), len(*messages))
+	*messages = [requeueSize]*SqsMessage{}
 	// Set the quantity of messages
-	*s = 0
+	*qty = 0
 }
