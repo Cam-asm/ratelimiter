@@ -32,10 +32,10 @@ This implementation performs pre-processing and cleanup for each request in sepa
 interference of any long-running processes, network timeouts or slow database queries.
 
 TODO	- Some HTTP errors can be handled gracefully and can be requested straight away,
-		  but JSON unmarshalling errors need to be re-queued.
+		but JSON unmarshalling errors need to be re-queued.
 		- Provide an easy way to setup multiple rate limiters
 		- Can we provide or override the functions/methods called in the rate limiter?
-		  Perhaps an interface would be a good fit - a struct that implements set methods?
+		Perhaps an interface would be a good fit - a struct that implements set methods?
 
 */
 
@@ -69,7 +69,7 @@ func listenToQuit() {
 	go func() {
 		// block until q channel receives an interrupt
 		<-q
-		fmt.Println("\n\nTRIGGER SHUTDOWN\n\n")
+		fmt.Print("\n\nTRIGGER SHUTDOWN\n\n")
 		quit = true
 	}()
 }
@@ -104,7 +104,7 @@ func getAndProcessMessages(readyToSend chan<- cuscalRequest) {
 		if quit {
 			// Close the channel
 			close(readyToSend)
-			fmt.Println("\n\n\n\t\tquit ==", u, "\n\n\n")
+			fmt.Print("\n\n\n\t\tquit ==", u, "\n\n\n")
 			return
 		}
 	}
@@ -163,9 +163,9 @@ func RateLimitSendMessages(readyToSend <-chan cuscalRequest) {
 }
 
 const (
-	ContentType = "Content-Type"
-	JSON        = "application/json"
-	TraceId     = "traceId"
+	contentType = "Content-Type"
+	json        = "application/json"
+	traceId     = "traceId"
 )
 
 type cuscalRequest struct {
@@ -227,7 +227,7 @@ func cleanOutRequeue() {
 }
 
 func (m *sqsMessage) Requeue() {
-	fmt.Println("Requeue", m.id, string(m.body))
+	fmt.Println("requeue", m.id, string(m.body))
 }
 
 func (c cuscalRequest) IsEmpty() bool {
@@ -255,6 +255,6 @@ func processMessage(message string, id uint, myUrl *string) (cuscalRequest, erro
 		id:      id,
 		url:     myUrl,
 		body:    []byte(message),
-		headers: []header{{ContentType, JSON}, {TraceId, "newUuid"}},
+		headers: []header{{contentType, json}, {traceId, "newUuid"}},
 	}, nil
 }

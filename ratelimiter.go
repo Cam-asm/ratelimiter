@@ -20,6 +20,7 @@ const (
 	maxCheckTime       = 15 * time.Second
 )
 
+// Start creates the required channels and wait groups on TPS and then starts the necessary go routines.
 func (t *TPS) Start() {
 	// Set realistic defaults.
 	if t.SendEvery < 2*time.Millisecond {
@@ -60,12 +61,13 @@ func (t *TPS) Start() {
 	t.requeueShutdown()
 }
 
+// TPS (transactions per second).
 type TPS struct {
 	ReadChannelSize uint8
 	QueueName       *string
 	SendEvery       time.Duration
 	MaxRequeueWait  time.Duration
-	Interface
+	Processor
 
 	chanRequeue   chan *SqsMessage
 	chanRead      chan CuscalRequest
@@ -204,10 +206,18 @@ func (t *TPS) waitResponse(c CuscalRequest) {
 	log.Println("save to database message:", c.Id)
 }
 
-type Interface interface {
+// Processor provides an interface to create custom implementation per API requirement.
+type Processor interface {
+	// ReceiveAndDeleteMessages queries the SQS database for the next batch of messages to be processed by ProcessMessage.
 	ReceiveAndDeleteMessages() ([]SqsMessage, error)
+
+	// ProcessMessage converts the SQS Message into a CuscalRequest and completes all processing to a ready state to be sent by SendRequest.
 	ProcessMessage(SqsMessage) (CuscalRequest, error)
+
+	// SendRequest is the rate limited function called every TPS.SendEvery. The response is handled by ProcessResponse.
 	SendRequest(CuscalRequest) error
+
+	// ProcessResponse completes any remaining tasks asynchronously for successful or erroneous requests sent be SendRequest.
 	ProcessResponse(CuscalRequest) error
 }
 
@@ -221,6 +231,7 @@ func (c *CuscalRequest) toMessage(Type *string) *SqsMessage {
 	}
 }
 
+// SqsMessage is to be changed to aws.SqsMessage.
 type SqsMessage struct {
 	Id      uint
 	Body    []byte
@@ -228,6 +239,7 @@ type SqsMessage struct {
 	Type    *string
 }
 
+// CuscalRequest is to be replaced.
 type CuscalRequest struct {
 	Id      uint
 	Url     string
@@ -236,6 +248,7 @@ type CuscalRequest struct {
 	Retries uint8
 }
 
+// Header represents an HTTP header and its value.
 type Header struct {
 	Header, Value string
 }
@@ -268,25 +281,25 @@ func (t *TPS) listenRequeue() {
 
 			switch {
 			case !ok:
-				t.Requeue(&toRequeue, &qty)
+				t.requeue(&toRequeue, &qty)
 				log.Print("\n\nEND listenRequeue\n\n")
 				t.wgRequeue.Done()
 				return
 			case qty == 1:
 				firstExpiry = time.Now().Add(t.MaxRequeueWait)
 			case qty == requeueSize:
-				t.Requeue(&toRequeue, &qty)
+				t.requeue(&toRequeue, &qty)
 			}
 
 		case now := <-timesUp:
 			if qty >= 1 && now.After(firstExpiry) {
-				t.Requeue(&toRequeue, &qty)
+				t.requeue(&toRequeue, &qty)
 			}
 		}
 	}
 }
 
-func (t *TPS) Requeue(messages *[requeueSize]*SqsMessage, qty *uint8) {
+func (t *TPS) requeue(messages *[requeueSize]*SqsMessage, qty *uint8) {
 	l := fmt.Sprintf("\t\t\t\t\t\t\t\t\t\t\t\tRequeued: %s - Requeued: ", *t.QueueName)
 
 	for _, m := range *messages {

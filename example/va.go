@@ -13,6 +13,7 @@ type va struct {
 	Url *string
 }
 
+// ReceiveAndDeleteMessages queries the SQS database for the next batch of messages to be processed by ProcessMessage.
 func (v va) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
 	fmt.Println("va: Batch read 10 sqs messages")
 
@@ -30,6 +31,7 @@ func (v va) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
 	}, randomError(5555, "va.ReceiveAndDeleteMessages")
 }
 
+// ProcessMessage converts the SQS Message into a CuscalRequest and completes all processing to a ready state to be sent by SendRequest.
 func (v va) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
 	traceId, err := uuid.NewUUID()
 	if err != nil {
@@ -45,10 +47,12 @@ func (v va) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.Cusca
 	}, randomError(message.Id, "va.ProcessMessage")
 }
 
+// ProcessResponse completes any remaining tasks asynchronously for successful or erroneous requests sent be SendRequest.
 func (v va) ProcessResponse(cr ratelimiter.CuscalRequest) error {
 	return randomError(cr.Id, "va.ProcessResponse")
 }
 
+// SendRequest is the rate limited function called every TPS.SendEvery. The response is handled by ProcessResponse.
 func (v va) SendRequest(request ratelimiter.CuscalRequest) (err error) {
 	fmt.Println("va:", http.MethodPost, request.Id, string(request.Body))
 	// r.Set.Headers("", "")

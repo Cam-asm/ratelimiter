@@ -8,12 +8,13 @@ import (
 	"github.com/google/uuid"
 )
 
-//
-type payid struct {
+// payId is a different rate limiter implementation to va (virtual accounts).
+type payId struct {
 	UrlPattern string
 }
 
-func (p payid) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
+// ReceiveAndDeleteMessages queries the SQS database for the next batch of messages to be processed by ProcessMessage.
+func (p payId) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
 	fmt.Println("pid: Batch read 10 sqs messages")
 
 	return []ratelimiter.SqsMessage{
@@ -30,7 +31,8 @@ func (p payid) ReceiveAndDeleteMessages() ([]ratelimiter.SqsMessage, error) {
 	}, randomError(9999, "pid.ReceiveAndDeleteMessages")
 }
 
-func (p payid) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
+// ProcessMessage converts the SQS Message into a CuscalRequest and completes all processing to a ready state to be sent by SendRequest.
+func (p payId) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.CuscalRequest, err error) { // maybe change url *string to type url?
 	traceId, err := uuid.NewUUID()
 	if err != nil {
 		return cr, fmt.Errorf("pid: error generating traceId: %w", err)
@@ -45,11 +47,13 @@ func (p payid) ProcessMessage(message ratelimiter.SqsMessage) (cr ratelimiter.Cu
 	}, randomError(message.Id, "pid.ProcessMessage")
 }
 
-func (p payid) ProcessResponse(cr ratelimiter.CuscalRequest) error {
+// ProcessResponse completes any remaining tasks asynchronously for successful or erroneous requests sent be SendRequest.
+func (p payId) ProcessResponse(cr ratelimiter.CuscalRequest) error {
 	return randomError(cr.Id, "pid.ProcessResponse")
 }
 
-func (p payid) SendRequest(request ratelimiter.CuscalRequest) (err error) {
+// SendRequest is the rate limited function called every TPS.SendEvery. The response is handled by ProcessResponse.
+func (p payId) SendRequest(request ratelimiter.CuscalRequest) (err error) {
 	/*var r *http.Request
 	r, err = http.NewRequest(http.MethodPost, request.Url, bytes.NewBuffer(request.Body))
 	if err != nil {

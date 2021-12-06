@@ -13,7 +13,7 @@ func main() {
 	vaQueueName := "VA"
 
 	v := ratelimiter.TPS{
-		Interface: va{
+		Processor: va{
 			Url: &vaUrlPattern,
 		},
 		QueueName: &vaQueueName,
@@ -22,7 +22,7 @@ func main() {
 
 	queueName := "PAYID"
 	pid := ratelimiter.TPS{
-		Interface: payid{
+		Processor: payId{
 			UrlPattern: "http://localhost:6060/%s%s",
 		},
 		QueueName: &queueName,
