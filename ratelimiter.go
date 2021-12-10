@@ -2,14 +2,19 @@
 package ratelimiter
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
 const (
@@ -40,24 +45,21 @@ func (t *TPS) Start() {
 
 	t.listenToQuit()
 
-	// readyToSend channel contains a list of Cuscal request ready to be sent
-	t.chanRead = make(chan CuscalRequest, t.ReadChannelSize)
-	t.chanRequeue = make(chan *SqsMessage)
+	// The read buffered channel contains requests that are ready to be sent.
+	t.chanRead = make(chan unit, t.ReadChannelSize)
+	// The requeue unbuffered channel receives problematic SQS messages that need to be reinserted into the SQS Queue.
+	t.chanRequeue = make(chan *sqs.Message)
 
 	// query sqs queue in a go routine
 	go t.getAndProcessMessages()
 
+	// Listens to t.chanRequeue.
 	go t.listenRequeue()
 
-	// blocks main() from exiting while there are no
+	// Blocks main() from exiting while the channel t.chanRead is open.
 	t.rateLimitSendMessages()
 
-	// Waits for all sendRequest goroutines to finish when rateLimitSendMessages() returns
-	// This allows each sendRequest() call to complete (wait for Cuscal response and
-	// save to the database)
-	t.wgSendRequest.Wait()
-	log.Println("ALL GO ROUTINES CLOSED")
-
+	// Once t.rateLimitSendMessages has finished, close the requeue channel t.chanRequeue.
 	t.requeueShutdown()
 }
 
@@ -67,10 +69,11 @@ type TPS struct {
 	QueueName       *string
 	SendEvery       time.Duration
 	MaxRequeueWait  time.Duration
+	Client          http.Client
 	Processor
 
-	chanRequeue   chan *SqsMessage
-	chanRead      chan CuscalRequest
+	chanRequeue   chan *sqs.Message
+	chanRead      chan unit
 	wgSendRequest sync.WaitGroup
 	wgRequeue     sync.WaitGroup
 	quit          chan os.Signal
@@ -79,6 +82,12 @@ type TPS struct {
 
 // Gracefully trigger the server to start its shutdown procedure.
 func (t *TPS) listenToQuit() {
+	// Waits for all sendRequest goroutines to finish when rateLimitSendMessages() returns
+	// This allows each sendAndProcess() call to complete (wait for Cuscal response and
+	// save to the database).
+	t.wgSendRequest.Wait()
+	log.Println("ALL GO ROUTINES CLOSED")
+
 	t.quit = make(chan os.Signal)
 	signal.Notify(t.quit, os.Interrupt, syscall.SIGTERM)
 	// Print out a response to the interrupt signal.
@@ -105,7 +114,7 @@ func (t *TPS) requeueShutdown() {
 // worker to query sqs queue
 func (t *TPS) getAndProcessMessages() {
 	log.Println("getAndProcessMessages")
-	var u uint // Used only for logging purposes.
+	var c uint // Used only for logging purposes.
 
 	for {
 		// call sqs to get the next 10 requests
@@ -117,23 +126,34 @@ func (t *TPS) getAndProcessMessages() {
 
 		// loop over each request
 		for i := range messages {
-			u++
-			messages[i].Id = u
-			// process each message - marshal the json payload ready for sending.
-			var request CuscalRequest
-			request, err = t.ProcessMessage(messages[i])
-			if err != nil {
+			if messages[i].Body == nil {
+				log.Println("Message body is empty :(")
+				continue
+			}
+
+			c++
+			var request *http.Request
+			request, err = t.ProcessMessage(messages[i].Body)
+			if err != nil || request == nil {
 				log.Println(err)
 				continue
 			}
 
-			// if there wasn't an issue processing the message,
-			// then send the message to the channel
-			// if the channel doesn't have any space available then
-			// this line blocks any further processing
-			log.Println(*t.QueueName, "processing message:", request.Id)
-			t.chanRead <- request
+			// Retrieve the retry counter.
+			var u unit
+			_ = json.Unmarshal([]byte(*messages[i].Body), &u)
+			// The error is not important because the retry counter is optional.
 
+			u.Id = c
+			u.Message = messages[i]
+			u.Request = request
+
+			// if there wasn't an issue processing the message,
+			// then send the message to the channel.
+			// If the channel doesn't have any space available then
+			// this line blocks any further processing
+			log.Println(*t.QueueName, "processing message:", u.Id)
+			t.chanRead <- u
 		}
 
 		// this could use the q channel from listenToQuit - but I want to keep this simple,
@@ -144,7 +164,7 @@ func (t *TPS) getAndProcessMessages() {
 		case <-t.quit:
 			// Close the channel
 			close(t.chanRead)
-			log.Print("\n\n\n\t\tquit ", *t.QueueName, ", LastMessageID ==", u, "\n\n\n")
+			log.Print("\n\n\n\t\tquit ", *t.QueueName, ", LastMessageID ==", c, "\n\n\n")
 			return
 		default:
 			log.Println("\t\t\t\t\t\t\t\tCONTINUE!!!")
@@ -162,95 +182,89 @@ func (t *TPS) rateLimitSendMessages() {
 		log.Println("\t\t\t\t\t\t>>>:", cr.Id)
 		if !ok {
 			// if the channel was closed then return.
-
-			/*// I've never encountered this problem - so it's disabled.
-			if !cr.IsEmpty() {
-				log.Println("cr is not meant to be populated")
-				go sendRequest(cr, ok)
-			}*/
 			log.Print("\n\nEXIT rateLimitSendMessages\n\n")
 			return
 		}
 
 		// asynchronously make the http request and wait for the response. Then save to DB
-		// cr.sendRequest()
-		if err := t.SendRequest(cr); err != nil {
-			// requeue message
-			log.Println("\t\t\t\t\t\t", *t.QueueName, "Send to requeue:", cr.Id)
-			t.chanRequeue <- cr.toMessage(t.QueueName)
-			continue
-		}
-
-		go t.waitResponse(cr)
-		log.Println("\t\t\t\t\t\tDone:", cr.Id)
+		go t.sendAndProcess(cr)
 	}
 }
 
-func (t *TPS) waitResponse(c CuscalRequest) {
+func (t *TPS) sendAndProcess(u unit) {
 	// This WaitGroup will let the go routines sendRequest to continue processing
 	// until wgSendRequest.Done is called.
 	t.wgSendRequest.Add(1)
 	defer t.wgSendRequest.Done()
 
-	// Simulate a long round trip time for the response from Cuscal
-	if rand.Intn(4) == 3 {
-		time.Sleep(5 * time.Second)
-	}
-
-	err := t.ProcessResponse(c)
+	body, err := t.sendRequest(u.Request)
 	if err != nil {
-		log.Println("Process Response err", err)
+		// requeue message
+		log.Println("\t\t\t\t\t\t", *t.QueueName, "Send to requeue:", *u.Message.MessageId)
+		t.chanRequeue <- u.Message
 		return
 	}
 
-	log.Println("save to database message:", c.Id)
+	// Simulate a long round trip time for the response from Cuscal
+	time.Sleep(time.Duration(rand.Intn(5)) * time.Second)
+
+	err = t.ProcessResponse(body)
+	if err != nil {
+		log.Println("Process Response err", err)
+		t.chanRequeue <- u.Message
+		return
+	}
+
+	log.Println("\t\t\t\t\t\tDone:", u.Id)
+}
+
+func (t *TPS) sendRequest(r *http.Request) (body []byte, _ error) {
+	response, err := t.Client.Do(r)
+	if err != nil {
+		return body, t.ResponseErr(err)
+	}
+
+	body, err = io.ReadAll(response.Body)
+	if err != nil {
+		_ = response.Body.Close()
+		// return body, fmt.Errorf("error reading response body: %w", err)
+		return
+	}
+
+	//TODO do we need to wrap these errors?
+	//err = response.Body.Close()
+	//if err != nil {
+	//	//return body, fmt.Errorf("error closing response body: %w", err)
+	//	return
+	//}
+
+	return body, response.Body.Close()
 }
 
 // Processor provides an interface to create custom implementation per API requirement.
 type Processor interface {
 	// ReceiveAndDeleteMessages queries the SQS database for the next batch of messages to be processed by ProcessMessage.
-	ReceiveAndDeleteMessages() ([]SqsMessage, error)
+	ReceiveAndDeleteMessages() ([]*sqs.Message, error)
 
-	// ProcessMessage converts the SQS Message into a CuscalRequest and completes all processing to a ready state to be sent by SendRequest.
-	ProcessMessage(SqsMessage) (CuscalRequest, error)
-
-	// SendRequest is the rate limited function called every TPS.SendEvery. The response is handled by ProcessResponse.
-	SendRequest(CuscalRequest) error
+	// ProcessMessage uses the sqs.Message.Body to complete all pre-processing and returns a http.Request ready to be sent.
+	ProcessMessage(data *string) (*http.Request, error)
 
 	// ProcessResponse completes any remaining tasks asynchronously for successful or erroneous requests sent be SendRequest.
-	ProcessResponse(CuscalRequest) error
+	ProcessResponse([]byte) error
+
+	// ResponseErr provides a way to modify errors returned from http.Response.
+	// If err == nil, then this function is not called.
+	// The error returned must always be non-nil.
+	ResponseErr(err error) error
+	// If your implementation doesn't require this, simply implement with: `func (y yourType)ResponseErr(err error)error{return err}`
 }
 
-func (c *CuscalRequest) toMessage(Type *string) *SqsMessage {
-	// Additional steps might be required here.
-	return &SqsMessage{
-		Id:      c.Id,
-		Body:    c.Body,
-		Retries: c.Retries + 1,
-		Type:    Type,
-	}
-}
-
-// SqsMessage is to be changed to aws.SqsMessage.
-type SqsMessage struct {
-	Id      uint
-	Body    []byte
-	Retries uint8
-	Type    *string
-}
-
-// CuscalRequest is to be replaced.
-type CuscalRequest struct {
-	Id      uint
-	Url     string
-	Body    []byte
-	Headers []Header
-	Retries uint8
-}
-
-// Header represents an HTTP header and its value.
-type Header struct {
-	Header, Value string
+type unit struct {
+	Request *http.Request `json:"-"`
+	Message *sqs.Message  `json:"-"`
+	// TODO remove Id -- used only for logging purposes.
+	Id      uint  `json:"-"`
+	Retries uint8 `json:"retry_count,omitempty"`
 }
 
 func (t *TPS) listenRequeue() {
@@ -259,12 +273,12 @@ func (t *TPS) listenRequeue() {
 	var (
 		qty         uint8
 		ok          bool
-		toRequeue   = [requeueSize]*SqsMessage{}
+		toRequeue   = [requeueSize]*sqs.Message{}
 		firstExpiry = time.Now().Add(t.MaxRequeueWait)
 		timesUp     = make(chan time.Time)
 	)
 
-	// When a message is received it could take many hours to receive enough SqsMessage's
+	// When a message is received it could take many hours to receive enough sqs.Message's
 	// to fill the batch size t.RequeueChanSize. So this ticker has been added to bypass
 	// that wait and ensure every message doesn't wait longer than TPS.MaxRequeueWait + TPS.checkEvery.
 	go func() {
@@ -299,7 +313,7 @@ func (t *TPS) listenRequeue() {
 	}
 }
 
-func (t *TPS) requeue(messages *[requeueSize]*SqsMessage, qty *uint8) {
+func (t *TPS) requeue(messages *[requeueSize]*sqs.Message, qty *uint8) {
 	l := fmt.Sprintf("\t\t\t\t\t\t\t\t\t\t\t\tRequeued: %s - Requeued: ", *t.QueueName)
 
 	for _, m := range *messages {
@@ -308,12 +322,12 @@ func (t *TPS) requeue(messages *[requeueSize]*SqsMessage, qty *uint8) {
 			continue
 		}
 
-		l += fmt.Sprintf("%d, ", m.Id)
+		l += fmt.Sprintf("%s, ", *m.MessageId)
 	}
 	log.Println(l)
 
 	// Clear all messages to prevent double requeued.
-	*messages = [requeueSize]*SqsMessage{}
+	*messages = [requeueSize]*sqs.Message{}
 	// Set the quantity of messages
 	*qty = 0
 }
