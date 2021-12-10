@@ -14,3 +14,7 @@ interference of any long-running processes, network timeouts or slow database qu
 
 ### Done
 - Add another channel for requeuing our SQS messages. We batch updates to limit costs.
+
+## Diagram
+Modify this flowchart diagram with [Miro](https://miro.com/app/board/uXjVObhdR_w=/?invite_link_id=827663665880) on the Assembly Payments Platform team.
+![flow chart](diagram.jpg)
