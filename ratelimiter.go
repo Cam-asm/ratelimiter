@@ -57,9 +57,9 @@ func (t *TPS) Start() {
 	go t.listenRequeue()
 
 	// Blocks main() from exiting while the channel t.chanRead is open.
-	t.rateLimitSendMessages()
+	t.channelThroughput()
 
-	// Once t.rateLimitSendMessages has finished, close the requeue channel t.chanRequeue.
+	// Once t.channelThroughput has finished, close the requeue channel t.chanRequeue.
 	t.requeueShutdown()
 }
 
@@ -82,7 +82,7 @@ type TPS struct {
 
 // Gracefully trigger the server to start its shutdown procedure.
 func (t *TPS) listenToQuit() {
-	// Waits for all sendRequest goroutines to finish when rateLimitSendMessages() returns
+	// Waits for all sendRequest goroutines to finish when channelThroughput() returns
 	// This allows each sendAndProcess() call to complete (wait for Cuscal response and
 	// save to the database).
 	t.wgSendRequest.Wait()
@@ -173,7 +173,7 @@ func (t *TPS) getAndProcessMessages() {
 	}
 }
 
-func (t *TPS) rateLimitSendMessages() {
+func (t *TPS) channelThroughput() {
 	// limit the rate that we receive from the channel readyToSend to once a second
 	for range time.NewTicker(t.SendEvery).C {
 		// wait to receive a message in readyToSend.
@@ -182,7 +182,7 @@ func (t *TPS) rateLimitSendMessages() {
 		log.Println("\t\t\t\t\t\t>>>:", cr.Id)
 		if !ok {
 			// if the channel was closed then return.
-			log.Print("\n\nEXIT rateLimitSendMessages\n\n")
+			log.Print("\n\nEXIT channelThroughput\n\n")
 			return
 		}
 
