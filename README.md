@@ -17,4 +17,4 @@ interference of any long-running processes, network timeouts or slow database qu
 
 ## Diagram
 Modify this flowchart diagram with [Miro](https://miro.com/app/board/uXjVObhdR_w=/?invite_link_id=827663665880) on the Assembly Payments Platform team.
-![flow chart](diagram.jpg)
+![flow chart](flowchart.jpg)
