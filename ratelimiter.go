@@ -231,12 +231,11 @@ func (t *TPS) sendRequest(r *http.Request) (body []byte, _ error) {
 		return
 	}
 
-	//TODO do we need to wrap these errors?
-	//err = response.Body.Close()
-	//if err != nil {
-	//	//return body, fmt.Errorf("error closing response body: %w", err)
-	//	return
-	//}
+	// TODO do we need to wrap these errors?
+	// err = response.Body.Close()
+	// if err != nil {
+	//    return body, fmt.Errorf("error closing response body: %w", err)
+	// }
 
 	return body, response.Body.Close()
 }
@@ -267,15 +266,18 @@ type unit struct {
 	Retries uint8 `json:"retry_count,omitempty"`
 }
 
+// listenRequeue concurrently listens to channel t.chanRequeue. SQS messages are requeued when:
+// * any message has been waiting longer than TPS.MaxRequeueWait + TPS.checkEvery or
+// * the channel receives ratelimiter.requeueSize messages within TPS.MaxRequeueWait.
 func (t *TPS) listenRequeue() {
 	t.wgRequeue.Add(1)
 
 	var (
-		qty         uint8
-		ok          bool
-		toRequeue   = [requeueSize]*sqs.Message{}
-		firstExpiry = time.Now().Add(t.MaxRequeueWait)
-		timesUp     = make(chan time.Time)
+		qty        uint8
+		isChanOpen bool
+		toRequeue  = [requeueSize]*sqs.Message{} // Use an array so the length doesn't continuously grow and shrink.
+		waitUntil  = time.Now().Add(t.MaxRequeueWait)
+		checkEvery = make(chan time.Time)
 	)
 
 	// When a message is received it could take many hours to receive enough sqs.Message's
@@ -283,37 +285,56 @@ func (t *TPS) listenRequeue() {
 	// that wait and ensure every message doesn't wait longer than TPS.MaxRequeueWait + TPS.checkEvery.
 	go func() {
 		for now := range time.NewTicker(t.checkEvery).C {
-			timesUp <- now
+			checkEvery <- now
 		}
 	}()
 
 	for {
 		select {
-		// Wait for a new message to be received in t.chanRequeue or ticker timesUp to be triggered.
-		case toRequeue[qty], ok = <-t.chanRequeue:
+		// Wait for a new message to be received in t.chanRequeue.
+		case toRequeue[qty], isChanOpen = <-t.chanRequeue:
+			// Maintain a counter for how many messages are in the current requeue batch. len(toRequeue) won't work because it is an array, not a variable length slice.
 			qty++
 
 			switch {
-			case !ok:
+			// When the channel is closed, requeue any outstanding messages & quit.
+			case !isChanOpen:
 				t.requeue(&toRequeue, &qty)
 				log.Print("\n\nEND listenRequeue\n\n")
 				t.wgRequeue.Done()
 				return
+
 			case qty == 1:
-				firstExpiry = time.Now().Add(t.MaxRequeueWait)
-			case qty == requeueSize:
+				// Set a limit for the maximum wait time allowed for the first message in the batch.
+				waitUntil = time.Now().Add(t.MaxRequeueWait)
+
+			case qty >= requeueSize:
+				// Process the full batch.
 				t.requeue(&toRequeue, &qty)
 			}
 
-		case now := <-timesUp:
-			if qty >= 1 && now.After(firstExpiry) {
+		// Or wait for ticker checkEvery to be triggered.
+		case now := <-checkEvery:
+			// Ensure all messages to be requeued don't wait longer than TPS.MaxRequeueWait + TPS.checkEvery before being sent to our SQS queue.
+			if qty >= 1 && now.After(waitUntil) {
 				t.requeue(&toRequeue, &qty)
 			}
 		}
 	}
 }
 
+// requeue inserts failed messages back into the SQS queue to be processed at a later time.
 func (t *TPS) requeue(messages *[requeueSize]*sqs.Message, qty *uint8) {
+	t.prettyPrint(messages)
+
+	// Clear all messages to prevent duplicate insertions.
+	*messages = [requeueSize]*sqs.Message{}
+	// Reset the quantity of messages.
+	*qty = 0
+}
+
+// prettyPrint logs each message to commandline.
+func (t *TPS) prettyPrint(messages *[requeueSize]*sqs.Message) {
 	l := fmt.Sprintf("\t\t\t\t\t\t\t\t\t\t\t\tRequeued: %s - Requeued: ", *t.QueueName)
 
 	for _, m := range *messages {
@@ -325,9 +346,4 @@ func (t *TPS) requeue(messages *[requeueSize]*sqs.Message, qty *uint8) {
 		l += fmt.Sprintf("%s, ", *m.MessageId)
 	}
 	log.Println(l)
-
-	// Clear all messages to prevent double requeued.
-	*messages = [requeueSize]*sqs.Message{}
-	// Set the quantity of messages
-	*qty = 0
 }
